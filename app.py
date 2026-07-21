@@ -4,7 +4,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
-
+from simulation import (
+    simulate_all_rolling_periods,
+    simulate_monthly_investment,
+)
 
 # ---------------------------------------------------------
 # PAGE SETTINGS
@@ -673,3 +676,523 @@ st.dataframe(
     ],
     use_container_width=True,
 )
+# ---------------------------------------------------------
+# ALL ROLLING INVESTMENT PERIODS
+# ---------------------------------------------------------
+st.divider()
+
+st.header("Every Possible QQQ vs TQQQ Investment Period")
+
+st.markdown(
+    """
+    This backtest begins on **every possible shared trading date**.
+
+    For each period, it invests **\\$5,000 initially** and then adds
+    **\\$100 on the first available trading day of every following
+    calendar month**. It compares the final QQQ and TQQQ balances
+    after 1, 5, or 10 years.
+    """
+)
+
+INITIAL_INVESTMENT = 5000
+MONTHLY_INVESTMENT = 100
+
+ROLLING_PERIODS = {
+    "1 Year": 1,
+    "5 Years": 5,
+    "10 Years": 10,
+}
+
+HISTORICAL_TQQQ_FILE = (
+    CURRENT_FOLDER / "historical_tqqq_1999.csv"
+)
+
+if not HISTORICAL_TQQQ_FILE.exists():
+    st.error(
+        "historical_tqqq_1999.csv was not found. "
+        "Run build_historical_tqqq.py first."
+    )
+    st.stop()
+
+historical_rolling_data = pd.read_csv(
+    HISTORICAL_TQQQ_FILE
+)
+
+historical_rolling_data.columns = (
+    historical_rolling_data.columns.str.strip()
+)
+
+historical_rolling_data["Date"] = pd.to_datetime(
+    historical_rolling_data["Date"],
+    errors="coerce",
+)
+
+historical_rolling_data["QQQ Close"] = pd.to_numeric(
+    historical_rolling_data["QQQ Close"],
+    errors="coerce",
+)
+
+historical_rolling_data["Historical TQQQ Close"] = (
+    pd.to_numeric(
+        historical_rolling_data[
+            "Historical TQQQ Close"
+        ],
+        errors="coerce",
+    )
+)
+
+rolling_prices = historical_rolling_data[
+    [
+        "Date",
+        "QQQ Close",
+        "Historical TQQQ Close",
+    ]
+].rename(
+    columns={
+        "Historical TQQQ Close": "TQQQ Close",
+    }
+)
+
+rolling_prices = (
+    rolling_prices.dropna(
+        subset=[
+            "Date",
+            "QQQ Close",
+            "TQQQ Close",
+        ]
+    )
+    .drop_duplicates(
+        subset="Date",
+        keep="last",
+    )
+    .sort_values("Date")
+    .reset_index(drop=True)
+)
+
+rolling_tabs = st.tabs(
+    list(ROLLING_PERIODS.keys())
+)
+
+all_rolling_results = []
+
+for tab, (period_name, years) in zip(
+    rolling_tabs,
+    ROLLING_PERIODS.items(),
+):
+    with tab:
+        with st.spinner(
+            f"Calculating every possible "
+            f"{period_name.lower()} period..."
+        ):
+            rolling_results = (
+                simulate_all_rolling_periods(
+                    prices=rolling_prices,
+                    years=years,
+                    initial_investment=(
+                        INITIAL_INVESTMENT
+                    ),
+                    monthly_investment=(
+                        MONTHLY_INVESTMENT
+                    ),
+                )
+            )
+
+        if rolling_results.empty:
+            st.warning(
+                f"There is not enough overlapping data "
+                f"to calculate complete {period_name.lower()} "
+                f"periods."
+            )
+            continue
+
+        all_rolling_results.append(
+            rolling_results.copy()
+        )
+
+        total_periods = len(rolling_results)
+
+        tqqq_wins = int(
+            (
+                rolling_results["Winner"]
+                == "TQQQ"
+            ).sum()
+        )
+
+        qqq_wins = int(
+            (
+                rolling_results["Winner"]
+                == "QQQ"
+            ).sum()
+        )
+
+        ties = int(
+            (
+                rolling_results["Winner"]
+                == "Tie"
+            ).sum()
+        )
+
+        tqqq_win_percentage = (
+            tqqq_wins / total_periods
+        )
+
+        qqq_win_percentage = (
+            qqq_wins / total_periods
+        )
+
+        median_qqq_ending_value = (
+            rolling_results[
+                "QQQ Ending Value"
+            ].median()
+        )
+
+        median_tqqq_ending_value = (
+            rolling_results[
+                "TQQQ Ending Value"
+            ].median()
+        )
+
+        average_difference = (
+            rolling_results[
+                "TQQQ Minus QQQ"
+            ].mean()
+        )
+
+        st.subheader(f"{period_name} Rolling Results")
+
+        st.caption(
+            f"Tested {total_periods:,} possible starting "
+            f"trading dates from "
+            f"{rolling_results['Start Date'].min():%B %d, %Y} "
+            f"through "
+            f"{rolling_results['Start Date'].max():%B %d, %Y}."
+        )
+
+        win_column, qqq_column, periods_column = (
+            st.columns(3)
+        )
+
+        win_column.metric(
+            "TQQQ Outperformed",
+            f"{tqqq_win_percentage:.1%}",
+            delta=(
+                f"{tqqq_wins:,} of "
+                f"{total_periods:,} periods"
+            ),
+        )
+
+        qqq_column.metric(
+            "QQQ Outperformed",
+            f"{qqq_win_percentage:.1%}",
+            delta=(
+                f"{qqq_wins:,} of "
+                f"{total_periods:,} periods"
+            ),
+        )
+
+        periods_column.metric(
+            "Periods Tested",
+            f"{total_periods:,}",
+            delta=f"{ties:,} ties",
+        )
+
+        qqq_median_column, tqqq_median_column, difference_column = (
+            st.columns(3)
+        )
+
+        qqq_median_column.metric(
+            "Median QQQ Ending Value",
+            f"${median_qqq_ending_value:,.2f}",
+        )
+
+        tqqq_median_column.metric(
+            "Median TQQQ Ending Value",
+            f"${median_tqqq_ending_value:,.2f}",
+        )
+
+        difference_column.metric(
+            "Average TQQQ Minus QQQ",
+            f"${average_difference:,.2f}",
+        )
+
+        # -------------------------------------------------
+        # ENDING VALUE BY STARTING DATE
+        # -------------------------------------------------
+        st.subheader(
+            "Ending Value for Every Starting Date"
+        )
+
+        st.write(
+            """
+            Each point represents one complete investment period.
+            The horizontal axis is the date on which the $5,000
+            initial investment was made.
+            """
+        )
+
+        ending_value_chart = (
+            rolling_results[
+                [
+                    "Start Date",
+                    "QQQ Ending Value",
+                    "TQQQ Ending Value",
+                ]
+            ]
+            .set_index("Start Date")
+        )
+
+        st.line_chart(
+            ending_value_chart,
+            y_label="Ending Portfolio Value ($)",
+        )
+
+        # -------------------------------------------------
+        # TQQQ ADVANTAGE OR DISADVANTAGE
+        # -------------------------------------------------
+        st.subheader(
+            "TQQQ Advantage Over QQQ"
+        )
+
+        st.write(
+            """
+            Values above zero mean TQQQ finished ahead.
+            Values below zero mean QQQ finished ahead.
+            """
+        )
+
+        difference_chart = (
+            rolling_results[
+                [
+                    "Start Date",
+                    "TQQQ Minus QQQ",
+                ]
+            ]
+            .set_index("Start Date")
+        )
+
+        st.line_chart(
+            difference_chart,
+            y_label="TQQQ Minus QQQ ($)",
+        )
+
+        # -------------------------------------------------
+        # RETURN COMPARISON
+        # -------------------------------------------------
+        st.subheader(
+            "Return on Total Contributions"
+        )
+
+        return_chart = (
+            rolling_results[
+                [
+                    "Start Date",
+                    "QQQ Return",
+                    "TQQQ Return",
+                ]
+            ]
+            .set_index("Start Date")
+            * 100
+        )
+
+        return_chart = return_chart.rename(
+            columns={
+                "QQQ Return": "QQQ Return (%)",
+                "TQQQ Return": "TQQQ Return (%)",
+            }
+        )
+
+        st.line_chart(
+            return_chart,
+            y_label="Return (%)",
+        )
+
+        # -------------------------------------------------
+        # BEST AND WORST PERIODS
+        # -------------------------------------------------
+        st.subheader("Notable Periods")
+
+        best_tqqq_period = rolling_results.loc[
+            rolling_results[
+                "TQQQ Minus QQQ"
+            ].idxmax()
+        ]
+
+        worst_tqqq_period = rolling_results.loc[
+            rolling_results[
+                "TQQQ Minus QQQ"
+            ].idxmin()
+        ]
+
+        best_column, worst_column = st.columns(2)
+
+        with best_column:
+            st.markdown(
+                "#### Biggest TQQQ Victory"
+            )
+
+            st.metric(
+                "TQQQ Advantage",
+                (
+                    f"${best_tqqq_period['TQQQ Minus QQQ']:,.2f}"
+                ),
+            )
+
+            st.write(
+                f"**Start:** "
+                f"{best_tqqq_period['Start Date']:%B %d, %Y}"
+            )
+
+            st.write(
+                f"**End:** "
+                f"{best_tqqq_period['End Date']:%B %d, %Y}"
+            )
+
+            st.write(
+                f"QQQ ended with "
+                f"**${best_tqqq_period['QQQ Ending Value']:,.2f}**."
+            )
+
+            st.write(
+                f"TQQQ ended with "
+                f"**${best_tqqq_period['TQQQ Ending Value']:,.2f}**."
+            )
+
+        with worst_column:
+            st.markdown(
+                "#### Biggest TQQQ Defeat"
+            )
+
+            st.metric(
+                "TQQQ Minus QQQ",
+                (
+                    f"${worst_tqqq_period['TQQQ Minus QQQ']:,.2f}"
+                ),
+            )
+
+            st.write(
+                f"**Start:** "
+                f"{worst_tqqq_period['Start Date']:%B %d, %Y}"
+            )
+
+            st.write(
+                f"**End:** "
+                f"{worst_tqqq_period['End Date']:%B %d, %Y}"
+            )
+
+            st.write(
+                f"QQQ ended with "
+                f"**${worst_tqqq_period['QQQ Ending Value']:,.2f}**."
+            )
+
+            st.write(
+                f"TQQQ ended with "
+                f"**${worst_tqqq_period['TQQQ Ending Value']:,.2f}**."
+            )
+
+        # -------------------------------------------------
+        # FULL DATA TABLE
+        # -------------------------------------------------
+        st.subheader(
+            f"All {total_periods:,} Periods"
+        )
+
+        display_results = rolling_results.copy()
+
+        display_results["Start Date"] = (
+            display_results["Start Date"].dt.strftime(
+                "%Y-%m-%d"
+            )
+        )
+
+        display_results["End Date"] = (
+            display_results["End Date"].dt.strftime(
+                "%Y-%m-%d"
+            )
+        )
+
+        money_columns = [
+            "Total Contributed",
+            "QQQ Ending Value",
+            "TQQQ Ending Value",
+            "QQQ Profit",
+            "TQQQ Profit",
+            "TQQQ Minus QQQ",
+        ]
+
+        for column in money_columns:
+            display_results[column] = (
+                display_results[column].map(
+                    lambda value: f"${value:,.2f}"
+                )
+            )
+
+        display_results["QQQ Return"] = (
+            display_results["QQQ Return"].map(
+                lambda value: f"{value:.2%}"
+            )
+        )
+
+        display_results["TQQQ Return"] = (
+            display_results["TQQQ Return"].map(
+                lambda value: f"{value:.2%}"
+            )
+        )
+
+        st.dataframe(
+            display_results[
+                [
+                    "Start Date",
+                    "End Date",
+                    "Total Contributed",
+                    "QQQ Ending Value",
+                    "TQQQ Ending Value",
+                    "QQQ Return",
+                    "TQQQ Return",
+                    "TQQQ Minus QQQ",
+                    "Winner",
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        period_csv = rolling_results.to_csv(
+            index=False
+        ).encode("utf-8")
+
+        st.download_button(
+            label=(
+                f"Download Every {period_name} Period"
+            ),
+            data=period_csv,
+            file_name=(
+                f"qqq_tqqq_all_"
+                f"{years}_year_periods.csv"
+            ),
+            mime="text/csv",
+            key=f"download_{years}_year_periods",
+        )
+
+# ---------------------------------------------------------
+# COMBINED DOWNLOAD
+# ---------------------------------------------------------
+if all_rolling_results:
+    combined_rolling_results = pd.concat(
+        all_rolling_results,
+        ignore_index=True,
+    )
+
+    combined_csv = (
+        combined_rolling_results.to_csv(
+            index=False
+        ).encode("utf-8")
+    )
+
+    st.download_button(
+        label="Download All Rolling Period Results",
+        data=combined_csv,
+        file_name=(
+            "qqq_tqqq_all_rolling_periods.csv"
+        ),
+        mime="text/csv",
+    )
